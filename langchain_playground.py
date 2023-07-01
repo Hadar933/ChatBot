@@ -43,8 +43,7 @@ def load_openai_llm(temperature: Optional[float] = 0.0):
     """
     loads an OpenAI model (that could be in Chat)
     :param temperature: value within [0,1] for results randomization
-    :param chat_model: True iff we wish to use chat llm model
-    :return: open ai model object
+    :return: openai model object
     """
 
     openai_llm = OpenAI(openai_api_key=os.environ['OPENAI_API_KEY'], temperature=temperature)
