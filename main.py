@@ -1,5 +1,8 @@
+import os
 from typing import Optional
 
+from langchain import HuggingFaceHub
+from langchain.embeddings.huggingface import HuggingFaceEmbeddings
 from langchain.embeddings.openai import OpenAIEmbeddings
 from langchain.text_splitter import CharacterTextSplitter
 from langchain.vectorstores import Chroma
@@ -8,98 +11,139 @@ from langchain.chat_models import ChatOpenAI
 from langchain.chains import RetrievalQAWithSourcesChain
 
 import requests
-import xml.etree.ElementTree as ET
-from dotenv import load_dotenv
+from xml.etree import ElementTree
 from loguru import logger
 
-load_dotenv()
+os.environ['HUGGINGFACEHUB_API_TOKEN'] = '...'
+os.environ['OPENAI_API_KEY'] = '...'
 
 
-def extract_urls_from_sitemap(sitemap):
+def ai_factory(platform: str):
     """
-    Extract all URLs from a sitemap XML string.
-
-    Args:
-        sitemap_string (str): The sitemap XML string.
-
-    Returns:
-        A list of URLs extracted from the sitemap.
+    a factory for different models
+    :param platform: a string that represents the desired platform
+    :return: a dictionary with embedding model and chat model
     """
-    # Parse the XML from the string
-    root = ET.fromstring(sitemap)
+    match platform:
+        case 'openai':
+            return {
+                'embedding': OpenAIEmbeddings(),
+                'model': ChatOpenAI()
+            }
 
-    # Define the namespace for the sitemap XML
-    namespace = {"ns": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+        case 'huggingface':
+            return {
+                'embedding': HuggingFaceEmbeddings(),
+                'model': HuggingFaceHub(
+                    repo_id="google/flan-t5-xl",
+                    model_kwargs={"temperature": 0, "max_length": 64}
+                )
 
-    # Find all <loc> elements under the <url> elements
-    urls = [
-        url.find("ns:loc", namespace).text for url in root.findall("ns:url", namespace)
-    ]
-
-    # Return the list of URLs
-    return urls
+            }
+        case other:
+            raise ValueError(f"Unsupported platform {platform}.")
 
 
-class KnowledgeBase:
-    def __init__(
-            self,
-            sitemap_url: str,
-            chunk_size: int,
-            chunk_overlap: int,
-            pattern: Optional[str] = None,
-    ):
-        logger.info("Building the knowledge base ...")
+class VectorDB:
+    """
+    The VectorDB class takes in a site url and converts in to
+    a vector database from which one can extract information based on
+    vector similarity to a query's input
+    """
 
-        logger.info("Loading sitemap from {sitemap_url} ...", sitemap_url=sitemap_url)
-        sitemap = requests.get(sitemap_url).text
-        urls = extract_urls_from_sitemap(sitemap)
+    def __init__(self, site_url: str,
+                 chunk_size: Optional[int] = 8000,
+                 chunk_overlap: Optional[int] = 3000,
+                 url_contains: Optional[str] = None,
+                 platform: Optional[str] = 'openai'):
+        self.site_url = site_url
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
+        self.pattern = url_contains
+        self.sitemap_url = f"{url}//sitemap.xml"
+        self.platform = platform
 
-        if pattern:
-            logger.info("Filtering URLs with pattern {pattern} ...", pattern=pattern)
-            sub_urls = [x for x in urls if pattern in x]
-            if len(sub_urls) == 0:
-                logger.info(f"No matching urls to {pattern}")
-            else:
-                urls = sub_urls
-                logger.info("{n} URLs extracted", n=len(urls))
+        self.ai = ai_factory(platform)
+        self.urls = self._extract_urls_from_sitemap()
+        if self.pattern:
+            self.urls = self._filter_urls()
+        self.chunks = self._from_urls_to_chunks()
+        self.chain = self._build_chain()
 
-        logger.info("Loading URLs content ...")
-        loader = UnstructuredURLLoader(urls)
-        data = loader.load()
-
-        logger.info("Splitting documents in chunks ...")
-        doc_splitter = CharacterTextSplitter(
-            chunk_size=chunk_size, chunk_overlap=chunk_overlap
-        )
-        docs = doc_splitter.split_documents(data)
-        logger.info("{n} chunks created", n=len(docs))
-
+    def _build_chain(self):
         logger.info("Building the vector database ...")
-        embeddings = OpenAIEmbeddings()
-        docsearch = Chroma.from_documents(docs, embeddings)
-
+        docsearch = Chroma.from_documents(self.chunks, self.ai['embedding'])
         logger.info("Building the retrieval chain ...")
-        self.chain = RetrievalQAWithSourcesChain.from_chain_type(
-            ChatOpenAI(),
+        chain = RetrievalQAWithSourcesChain.from_chain_type(
+            llm=self.ai['model'],
             chain_type="map_reduce",
             retriever=docsearch.as_retriever(),
         )
+        return chain
 
-        logger.info("Knowledge base created!")
+    def _from_urls_to_chunks(self):
+        """
+        takes the list of urls and converts in to a dataset of chunks with given size and overlap
+        :param chunk_overlap: over-lap between consecutive chunks of data
+        :param chunk_size: number of tokens per chunk
+        :return: chunks data structure
+        """
+        logger.info("Loading URLs content ...")
+        loader = UnstructuredURLLoader(self.urls)
+        data = loader.load()
+        logger.info("Splitting documents in chunks ...")
+        doc_splitter = CharacterTextSplitter(
+            chunk_size=self.chunk_size,
+            chunk_overlap=self.chunk_overlap
+        )
+        chunks = doc_splitter.split_documents(data)
+        logger.info(f"{len(chunks)} chunks created")
+        return chunks
 
-    def ask(self, query: str):
-        return self.chain({"question": query}, return_only_outputs=True)
+    def _filter_urls(self):
+        """
+        filters the url based on a desired patter
+        """
+        logger.info(f"Filtering URLs with pattern {self.pattern} ...")
+        sub_urls = [x for x in self.urls if self.pattern in x]
+        if len(sub_urls) == 0:
+            logger.info(f"No matching urls for {self.pattern}. Using ALL Urls instead.")
+            return self.urls
+        else:
+            logger.info(f"{len(sub_urls)} URLs extracted")
+            return sub_urls
+
+    def _extract_urls_from_sitemap(self):
+        """
+         Extract all URLs from a sitemap XML string.
+        :return:  A list of URLs extracted from the sitemap.
+        """
+        # Parse the XML from the string
+        logger.info(f"Loading sitemap from {self.site_url} ...")
+        sitemaps = requests.get(self.sitemap_url).text
+        root = ElementTree.fromstring(sitemaps)
+        # Define the namespace for the sitemap XML
+        namespace = {"ns": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+        # Find all <loc> elements under the <url> elements
+        urls = []
+        for url_object in root.findall("ns:url", namespace):
+            curr_url = url_object.find("ns:loc", namespace).text
+            urls.append(curr_url)
+        return urls
+
+    def query(self, prompt: str):
+
+        return self.chain({"question": prompt}, return_only_outputs=True)
 
 
 if __name__ == "__main__":
     # Build the knowledge base
-    url = 'https://nextjs.org'
-    kb = KnowledgeBase(
-        sitemap_url=f"{url}/sitemap.xml",
-        pattern="docs/app/api-refe",
-        chunk_size=8000,
-        chunk_overlap=3000,
+    url = 'https://ayalatours.co.il/'
+    db = VectorDB(
+        site_url=url,
+        url_contains='/Israel/',
+        platform='huggingface'
     )
 
     # Ask a question
-    res = kb.ask("How do I deploy my Next.js app?")
+    res = db.query("Are there any deals to Karpathops?")
