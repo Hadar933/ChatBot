@@ -15,8 +15,7 @@ import requests
 from xml.etree import ElementTree
 from loguru import logger
 
-os.environ['HUGGINGFACEHUB_API_TOKEN'] = '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'
-os.environ['OPENAI_API_KEY'] = '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'
+os.environ['HUGGINGFACEHUB_API_TOKEN'] = '...'
 
 
 def ai_factory(platform: str):
@@ -155,8 +154,10 @@ class VectorDB:
         return urls
 
     def query(self, prompt: str):
-
-        return self.chain({"question": prompt}, return_only_outputs=True)
+        return self.chain(
+            {"question": prompt},
+            return_only_outputs=True
+        )
 
 
 if __name__ == "__main__":
@@ -169,5 +170,5 @@ if __name__ == "__main__":
     )
 
     # Ask a question
-    res = db.query("Are there any deals to Karpathops?")
-    x=2
+    res = db.query("Are there any deals for 15 days?")
+    x = 2
