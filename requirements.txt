@@ -1,0 +1,11 @@
+openai
+langchain
+requests
+python-dotenv
+loguru
+unstructured
+python-magic-bin
+chromadb
+sentence_transformers
+tiktoken
+faiss-cpu
