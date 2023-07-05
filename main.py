@@ -2,6 +2,7 @@ import os
 import pickle
 from typing import Optional
 
+import dotenv
 from langchain import HuggingFaceHub
 from langchain.embeddings.huggingface import HuggingFaceEmbeddings
 from langchain.embeddings.openai import OpenAIEmbeddings
@@ -15,7 +16,8 @@ import requests
 from xml.etree import ElementTree
 from loguru import logger
 
-os.environ['HUGGINGFACEHUB_API_TOKEN'] = '...'
+API_KEYS_ENV_PATH = 'G:\My Drive\\files\\Fun with Python\\ChatBot\\API_KEYS.env'
+dotenv.load_dotenv(API_KEYS_ENV_PATH)
 
 
 def ai_factory(platform: str):
@@ -52,8 +54,8 @@ class VectorDB:
     """
 
     def __init__(self, site_url: str,
-                 chunk_size: Optional[int] = 8000,
-                 chunk_overlap: Optional[int] = 3000,
+                 chunk_size: Optional[int] = 2000,
+                 chunk_overlap: Optional[int] = 500,
                  url_contains: Optional[str] = None,
                  platform: Optional[str] = 'openai'):
 
@@ -62,7 +64,7 @@ class VectorDB:
         self.chunk_overlap = chunk_overlap
         self.pattern = url_contains
         # self.sitemap_url = f"{url}//sitemap.xml"
-        self.sitemap_url = "https://ayalatours.co.il/destinations-sitemap.xml"
+        self.sitemap_url = "https://www.itshadar.com/sitemap-posts.xml"
         self.platform = platform
         self.ai = ai_factory(platform)
         self.vector_db_path = os.path.join('vector_db_cache', 'vdb.pkl')
@@ -166,9 +168,10 @@ if __name__ == "__main__":
     db = VectorDB(
         site_url=url,
         url_contains='trip',
-        platform='huggingface'
+        platform='openai'
     )
 
     # Ask a question
-    res = db.query("Are there any deals for 15 days?")
+    prompt = "can you summarize all the weekly picks in this website?"
+    res = db.query(prompt)
     x = 2
