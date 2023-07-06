@@ -1,7 +1,7 @@
 import os
 import pickle
 from typing import Optional
-
+import requests
 import dotenv
 from langchain import HuggingFaceHub
 from langchain.embeddings.huggingface import HuggingFaceEmbeddings
@@ -11,13 +11,10 @@ from langchain.vectorstores import FAISS
 from langchain.document_loaders import UnstructuredURLLoader
 from langchain.chat_models import ChatOpenAI
 from langchain.chains import RetrievalQAWithSourcesChain
-
-import requests
 from xml.etree import ElementTree
 from loguru import logger
 
-API_KEYS_ENV_PATH = 'G:\My Drive\\files\\Fun with Python\\ChatBot\\API_KEYS.env'
-dotenv.load_dotenv(API_KEYS_ENV_PATH)
+dotenv.load_dotenv(os.path.abspath('API_KEYS.env'))
 
 
 def ai_factory(platform: str):
@@ -63,6 +60,7 @@ class VectorDB:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.pattern = url_contains
+        # TODO: some sites, like mine offer a sitemap that is a referral to sub sitemaps. We need to support this
         # self.sitemap_url = f"{url}//sitemap.xml"
         self.sitemap_url = "https://www.itshadar.com/sitemap-posts.xml"
         self.platform = platform
