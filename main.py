@@ -1,6 +1,5 @@
 import os
 import pickle
-from typing import Optional
 import requests
 import dotenv
 from langchain import HuggingFaceHub
@@ -12,35 +11,31 @@ from langchain.document_loaders import UnstructuredURLLoader
 from langchain.chat_models import ChatOpenAI
 from langchain.chains import RetrievalQAWithSourcesChain
 from xml.etree import ElementTree
+from typing import Optional
 from loguru import logger
 
 dotenv.load_dotenv(os.path.abspath('API_KEYS.env'))
 
 
-def ai_factory(platform: str):
-    """
-    a factory for different models
-    :param platform: a string that represents the desired platform
-    :return: a dictionary with embedding model and chat model
-    """
-    match platform:
-        case 'openai':
-            return {
-                'embedding': OpenAIEmbeddings(),
-                'model': ChatOpenAI()
-            }
+class AIFactory:
+    @staticmethod
+    def embedding_factory(platform: Optional[str] = 'huggingface'):
+        match platform:
+            case 'openai':
+                return OpenAIEmbeddings()
+            case 'huggingface':
+                return HuggingFaceEmbeddings
+            case _:
+                return None
 
-        case 'huggingface':
-            return {
-                'embedding': HuggingFaceEmbeddings(),
-                'model': HuggingFaceHub(
-                    repo_id="tiiuae/falcon-7b-instruct",
-                    model_kwargs={"max_new_tokens": 500}
-                )
-
-            }
-        case other:
-            raise ValueError(f"Unsupported platform {platform}.")
+    @staticmethod
+    def model_factory(repo_id: Optional[str] = 'tiiuae/falcon-7b-instruct'):
+        match repo_id:
+            case 'openai':
+                return ChatOpenAI()
+            case other:
+                return HuggingFaceHub(repo_id=repo_id,
+                                      model_kwargs={"max_new_tokens": 500})
 
 
 class VectorDB:
@@ -51,26 +46,26 @@ class VectorDB:
     """
 
     def __init__(self, site_url: str,
+                 llm, embedding,
                  chunk_size: Optional[int] = 2000,
                  chunk_overlap: Optional[int] = 500,
-                 url_contains: Optional[str] = None,
-                 platform: Optional[str] = 'openai'):
+                 url_contains: Optional[str] = None
+                 ):
 
         self.site_url = site_url
+        self.llm = llm
+        self.embedding = embedding
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
-        self.pattern = url_contains
-        # TODO: some sites, like mine offer a sitemap that is a referral to sub sitemaps. We need to support this
+        self.url_contains = url_contains
         # self.sitemap_url = f"{url}//sitemap.xml"
         self.sitemap_url = "https://www.itshadar.com/sitemap-posts.xml"
-        self.platform = platform
-        self.ai = ai_factory(platform)
         self.vector_db_path = os.path.join('vector_db_cache', 'vdb.pkl')
         if os.path.exists(self.vector_db_path):  # fast load
             self.vector_db = self._get_vector_db(from_memory=True)
         else:  # slow load
             self.urls = self._extract_urls_from_sitemap()
-            if self.pattern:
+            if self.url_contains:
                 self.urls = self._filter_urls()
             self.chunks = self._from_urls_to_chunks()
             self.vector_db = self._get_vector_db()
@@ -81,7 +76,7 @@ class VectorDB:
         """ returns a RetrievalQAWithSources chain given a specified llm, type and database """
         logger.info("Building the retrieval chain ...")
         chain = RetrievalQAWithSourcesChain.from_chain_type(
-            llm=self.ai['model'],
+            llm=self.llm,
             chain_type="map_reduce",
             retriever=self.vector_db.as_retriever()
         )
@@ -98,7 +93,7 @@ class VectorDB:
                 return pickle.load(file)
         else:
             logger.info("Building the vector database ...")
-            vector_db = FAISS.from_documents(self.chunks, self.ai['embedding'])
+            vector_db = FAISS.from_documents(self.chunks, self.embedding)
             logger.info(f"Saving vector db to memory as as {self.vector_db_path}.")
             with open(self.vector_db_path, "wb") as file:
                 pickle.dump(vector_db, file)
@@ -125,10 +120,10 @@ class VectorDB:
         """
         filters the url based on a desired patter
         """
-        logger.info(f"Filtering URLs with pattern {self.pattern} ...")
-        sub_urls = [x for x in self.urls if self.pattern in x]
+        logger.info(f"Filtering URLs with pattern {self.url_contains} ...")
+        sub_urls = [x for x in self.urls if self.url_contains in x]
         if len(sub_urls) == 0:
-            logger.info(f"No matching urls for {self.pattern}. Using ALL Urls instead.")
+            logger.info(f"No matching urls for {self.url_contains}. Using ALL Urls instead.")
             return self.urls
         else:
             logger.info(f"{len(sub_urls)} URLs extracted")
@@ -142,15 +137,21 @@ class VectorDB:
         """
         # Parse the XML from the string
         logger.info(f"Loading sitemap from {self.site_url} ...")
-        sitemaps = requests.get(self.sitemap_url).text
-        root = ElementTree.fromstring(sitemaps)
-        # Define the namespace for the sitemap XML
-        namespace = {"ns": "http://www.sitemaps.org/schemas/sitemap/0.9"}
-        # Find all <loc> elements under the <url> elements
+        schema = "{http://www.sitemaps.org/schemas/sitemap/0.9}"
+        all_sitemaps = requests.get(self.sitemap_url).text
+        root = ElementTree.fromstring(all_sitemaps)
+        # extracting all possible sub-sitemaps (in case the sitemap_url is an index)
+        sub_sitemaps = root.findall(f'{schema}sitemap')
+        if len(sub_sitemaps) == 0:  # the sitemap does not redirect to sub-sitemaps
+            sub_sitemaps = [self.sitemap_url]
+        else:
+            sub_sitemaps = [xml.find(f'{schema}loc').text for xml in sub_sitemaps]
         urls = []
-        for url_object in root.findall("ns:url", namespace):
-            curr_url = url_object.find("ns:loc", namespace).text
-            urls.append(curr_url)
+        for xml in sub_sitemaps:
+            xml_instance = ElementTree.fromstring(requests.get(xml).text)
+            for url_object in xml_instance.findall(f'{schema}url'):
+                curr_url = url_object.find(f'{schema}loc').text
+                urls.append(curr_url)
         return urls
 
     def query(self, prompt: str):
@@ -162,12 +163,11 @@ class VectorDB:
 
 if __name__ == "__main__":
     # Build the knowledge base
-    url = 'https://ayalatours.co.il/'
-    db = VectorDB(
-        site_url=url,
-        url_contains='trip',
-        platform='openai'
-    )
+    # language_model = AIFactory.model_factory('openai')
+    # embedding_model = AIFactory.embedding_factory('openai')
+    url = 'https://itshadar.com'
+
+    db = VectorDB(site_url=url, llm=None, embedding=None)
 
     # Ask a question
     prompt = "can you summarize all the weekly picks in this website?"
