@@ -1,5 +1,7 @@
 import os
 import pickle
+import re
+
 import requests
 import dotenv
 from langchain import HuggingFaceHub
@@ -11,7 +13,7 @@ from langchain.document_loaders import UnstructuredURLLoader
 from langchain.chat_models import ChatOpenAI
 from langchain.chains import RetrievalQAWithSourcesChain
 from xml.etree import ElementTree
-from typing import Optional
+from typing import Optional, List, Pattern
 from loguru import logger
 
 dotenv.load_dotenv(os.path.abspath('API_KEYS.env'))
@@ -24,7 +26,7 @@ class AIFactory:
             case 'openai':
                 return OpenAIEmbeddings()
             case 'huggingface':
-                return HuggingFaceEmbeddings
+                return HuggingFaceEmbeddings()
             case _:
                 return None
 
@@ -38,6 +40,47 @@ class AIFactory:
                                       model_kwargs={"max_new_tokens": 500})
 
 
+class Crawler:
+    """
+    The Crawler class parses a site's URL and extract all redirected sub-URLs within it
+    """
+
+    def __init__(self, site_url: str, url_contains: Optional[str] = None):
+        self.site_url: str = site_url
+        self.sitemap_url: str = f"{site_url}//sitemap.xml"
+        self.url_contains: Pattern[str] = re.compile(url_contains) if url_contains is not None else None
+        self.schema = "{http://www.sitemaps.org/schemas/sitemap/0.9}"
+
+    def filter_urls(self, urls: List[str]):
+        """ filters the url based on a desired patter
+        """
+        sub_urls = [u for u in urls if re.search(self.url_contains, u)]
+        return urls if len(sub_urls) == 0 else sub_urls
+
+    def extract_urls(self):
+        """
+         Extract all URLs from a sitemap XML string.
+        :return:  A list of URLs extracted from the sitemap.
+        """
+        # Parse the XML from the string
+        logger.info(f"Loading sitemap from {self.site_url} ...")
+        all_sitemaps = requests.get(self.sitemap_url).text
+        root = ElementTree.fromstring(all_sitemaps)
+        # extracting all possible sub-sitemaps (in case the sitemap_url is an index)
+        sub_sitemaps = root.findall(f'{self.schema}sitemap')
+        if len(sub_sitemaps) == 0:  # the sitemap does not redirect to sub-sitemaps
+            sub_sitemaps = [self.sitemap_url]
+        else:
+            sub_sitemaps = [xml.find(f'{self.schema}loc').text for xml in sub_sitemaps]
+        urls = []
+        for xml in sub_sitemaps:
+            xml_instance = ElementTree.fromstring(requests.get(xml).text)
+            for url_object in xml_instance.findall(f'{self.schema}url'):
+                curr_url = url_object.find(f'{self.schema}loc').text
+                urls.append(curr_url)
+        return urls
+
+
 class VectorDB:
     """
     The VectorDB class takes in a site url and converts in to
@@ -49,27 +92,21 @@ class VectorDB:
                  llm, embedding,
                  chunk_size: Optional[int] = 2000,
                  chunk_overlap: Optional[int] = 500,
-                 url_contains: Optional[str] = None
-                 ):
-
-        self.site_url = site_url
+                 url_contains: Optional[str] = None):
         self.llm = llm
         self.embedding = embedding
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
-        self.url_contains = url_contains
-        # self.sitemap_url = f"{url}//sitemap.xml"
-        self.sitemap_url = "https://www.itshadar.com/sitemap-posts.xml"
         self.vector_db_path = os.path.join('vector_db_cache', 'vdb.pkl')
+        self.crawler = Crawler(site_url, url_contains)
         if os.path.exists(self.vector_db_path):  # fast load
             self.vector_db = self._get_vector_db(from_memory=True)
         else:  # slow load
-            self.urls = self._extract_urls_from_sitemap()
-            if self.url_contains:
-                self.urls = self._filter_urls()
+            self.urls = self.crawler.extract_urls()
+            if url_contains:
+                self.urls = self.crawler.filter_urls(self.urls)
             self.chunks = self._from_urls_to_chunks()
             self.vector_db = self._get_vector_db()
-
         self.chain = self._build_chain()
 
     def _build_chain(self):
@@ -116,58 +153,16 @@ class VectorDB:
         logger.info(f"{len(chunks)} chunks created")
         return chunks
 
-    def _filter_urls(self):
-        """
-        filters the url based on a desired patter
-        """
-        logger.info(f"Filtering URLs with pattern {self.url_contains} ...")
-        sub_urls = [x for x in self.urls if self.url_contains in x]
-        if len(sub_urls) == 0:
-            logger.info(f"No matching urls for {self.url_contains}. Using ALL Urls instead.")
-            return self.urls
-        else:
-            logger.info(f"{len(sub_urls)} URLs extracted")
-            return sub_urls
-
-    def _extract_urls_from_sitemap(self):
-        """
-         Extract all URLs from a sitemap XML string.
-        :return:  A list of URLs extracted from the sitemap.
-
-        """
-        # Parse the XML from the string
-        logger.info(f"Loading sitemap from {self.site_url} ...")
-        schema = "{http://www.sitemaps.org/schemas/sitemap/0.9}"
-        all_sitemaps = requests.get(self.sitemap_url).text
-        root = ElementTree.fromstring(all_sitemaps)
-        # extracting all possible sub-sitemaps (in case the sitemap_url is an index)
-        sub_sitemaps = root.findall(f'{schema}sitemap')
-        if len(sub_sitemaps) == 0:  # the sitemap does not redirect to sub-sitemaps
-            sub_sitemaps = [self.sitemap_url]
-        else:
-            sub_sitemaps = [xml.find(f'{schema}loc').text for xml in sub_sitemaps]
-        urls = []
-        for xml in sub_sitemaps:
-            xml_instance = ElementTree.fromstring(requests.get(xml).text)
-            for url_object in xml_instance.findall(f'{schema}url'):
-                curr_url = url_object.find(f'{schema}loc').text
-                urls.append(curr_url)
-        return urls
-
     def query(self, prompt: str):
-        return self.chain(
-            {"question": prompt},
-            return_only_outputs=True
-        )
+        return self.chain({"question": prompt}, return_only_outputs=True)
 
 
 if __name__ == "__main__":
-    # Build the knowledge base
-    # language_model = AIFactory.model_factory('openai')
-    # embedding_model = AIFactory.embedding_factory('openai')
-    url = 'https://itshadar.com'
+    language_model = AIFactory.model_factory('openai')
+    embedding_model = AIFactory.embedding_factory('openai')
+    url = 'https://ayalatours.co.il/'
 
-    db = VectorDB(site_url=url, llm=None, embedding=None)
+    db = VectorDB(site_url=url, llm=language_model, embedding=embedding_model, url_contains='days')
 
     # Ask a question
     prompt = "can you summarize all the weekly picks in this website?"
