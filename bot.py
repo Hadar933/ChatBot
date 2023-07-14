@@ -22,7 +22,7 @@ dotenv.load_dotenv(os.path.abspath('API_KEYS.env'))
 
 class AIFactory:
     @staticmethod
-    def embedding_factory(platform: Optional[str] = 'huggingface'):
+    def embeddings(platform: Optional[str] = 'huggingface'):
         match platform:
             case 'openai':
                 return OpenAIEmbeddings()
@@ -32,12 +32,12 @@ class AIFactory:
                 return None
 
     @staticmethod
-    def model_factory(repo_id: Optional[str] = 'tiiuae/falcon-7b-instruct'):
-        match repo_id:
+    def llm_models(model_namae: Optional[str] = 'tiiuae/falcon-7b-instruct'):
+        match model_namae:
             case 'openai':
                 return ChatOpenAI()
             case other:
-                return HuggingFaceHub(repo_id=repo_id,
+                return HuggingFaceHub(repo_id=model_namae,
                                       model_kwargs={"max_new_tokens": 500})
 
 
@@ -139,9 +139,9 @@ class ChatBot:
         chunks = doc_splitter.split_documents(data)
         return chunks
 
-    def query(self, prompt: str):
-        result = self.chain({"question": prompt}, return_only_outputs=True)
-        pretty_print(result)
+    def ask(self, question: str, verbose: bool = False):
+        result = self.chain({"question": question}, return_only_outputs=True)
+        if verbose: pretty_print(result)
         return result
 
 
@@ -159,13 +159,12 @@ def pretty_print(dictionary, line_length: Optional[int] = 70):
 
 
 if __name__ == "__main__":
-    language_model = AIFactory.model_factory('openai')
-    embedding_model = AIFactory.embedding_factory('openai')
+    language_model = AIFactory.llm_models('openai')
+    embedding_model = AIFactory.embeddings('openai')
     url = 'https://ayalatours.co.il/'
 
-    db = ChatBot(site_url=url, llm=language_model, embedding=embedding_model)
+    cb = ChatBot(site_url=url, llm=language_model, embedding=embedding_model)
 
     # Ask a question
     prompt = "what is this website about?"
-    res = db.query(prompt)
-    x = 2
+    res = cb.ask(prompt)
