@@ -1,3 +1,3 @@
 # ChatBot
 
- ChatBot 🤖 is a smart chat tool that can be seamlessly integrated into any website.
+ Use ChatBot 🤖 to interact with any website
