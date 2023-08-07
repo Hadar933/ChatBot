@@ -161,7 +161,7 @@ def pretty_print(dictionary, line_length: Optional[int] = 70):
 if __name__ == "__main__":
     language_model = AIFactory.llm_models('openai')
     embedding_model = AIFactory.embeddings('openai')
-    url = 'https://ayalatours.co.il/'
+    url = '.../'
 
     cb = ChatBot(site_url=url, llm=language_model, embedding=embedding_model)
 
